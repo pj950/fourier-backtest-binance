@@ -28,3 +28,7 @@ class BinanceRateLimitError(BinanceTransientError):
             "retry_after": self.retry_after,
             "used_weight": self.used_weight,
         }
+
+
+class BinanceStreamError(BinanceError):
+    """Raised when Binance streaming encounters a fatal error."""

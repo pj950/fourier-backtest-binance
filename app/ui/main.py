@@ -1,12 +1,15 @@
+import time
 import traceback
 from datetime import UTC, datetime
 from io import StringIO
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from app.ui.live import LiveComputationConfig, LiveDataCoordinator
 from config.presets import PresetError, PresetManager, UIConfig
 from config.settings import settings
 from core.analysis.fourier import smooth_price_series
@@ -27,6 +30,7 @@ from core.data.exceptions import (
     BinanceTransientError,
 )
 from core.data.loader import SUPPORTED_INTERVALS, SUPPORTED_SYMBOLS, load_klines
+from core.data.streaming import StreamState
 
 preset_manager = PresetManager(settings.preset_storage_path, settings.last_session_state_path)
 
@@ -109,6 +113,78 @@ def _current_config_from_session() -> UIConfig:
         fee_rate=float(st.session_state.get("fee_rate", defaults.fee_rate)),
         slippage=float(st.session_state.get("slippage", defaults.slippage)),
     )
+
+
+def _live_store() -> dict[str, Any]:
+    store = st.session_state.get("_live_state")
+    if store is None:
+        store = {
+            "enabled": False,
+            "controller": None,
+            "symbol": None,
+            "interval": None,
+            "start_time": None,
+            "config": None,
+        }
+        st.session_state["_live_state"] = store
+    return store
+
+
+def _shutdown_live_controller() -> None:
+    store = _live_store()
+    controller = store.get("controller")
+    if controller is not None:
+        controller.shutdown()
+    store.update(
+        {
+            "enabled": False,
+            "controller": None,
+            "symbol": None,
+            "interval": None,
+            "start_time": None,
+            "config": None,
+        }
+    )
+
+
+def _ensure_live_controller(symbol: str, interval: str, df: pd.DataFrame) -> LiveDataCoordinator:
+    if df.empty:
+        raise ValueError("Live controller requires non-empty data.")
+
+    store = _live_store()
+    start_ts = pd.Timestamp(df["open_time"].min())
+    start_dt = start_ts.to_pydatetime()
+
+    controller: LiveDataCoordinator | None = store.get("controller")
+    if controller is not None:
+        if (
+            store.get("symbol") != symbol
+            or store.get("interval") != interval
+            or store.get("start_time") != start_dt
+        ):
+            controller.shutdown()
+            controller = None
+
+    if controller is None:
+        controller = LiveDataCoordinator(
+            symbol=symbol,
+            interval=interval,
+            start_time=start_dt,
+            initial_data=df.copy(),
+        )
+        controller.start()
+
+    store.update(
+        {
+            "enabled": True,
+            "controller": controller,
+            "symbol": symbol,
+            "interval": interval,
+            "start_time": start_dt,
+        }
+    )
+
+    return controller
 
 
 def _list_presets() -> list[str]:
@@ -261,6 +337,8 @@ if st.button("Load Data"):
     elif start_date_value > end_date_value:
         st.error("Start date must be earlier than end date.")
     else:
+        _shutdown_live_controller()
+        st.session_state["live_enabled"] = False
         with st.spinner("Loading data..."):
             start_dt = datetime.combine(start_date_value, datetime.min.time()).replace(tzinfo=UTC)
             end_dt = datetime.combine(end_date_value, datetime.max.time()).replace(tzinfo=UTC)
@@ -297,6 +375,98 @@ if st.button("Load Data"):
 
 if "data" in st.session_state and not st.session_state["data"].empty:
     df = st.session_state["data"]
+
+    live_store = _live_store()
+    st.session_state.setdefault("live_enabled", live_store.get("enabled", False))
+
+    st.markdown("---")
+    st.subheader("⚡ Live Data")
+
+    live_cols = st.columns([1, 1, 2])
+    with live_cols[0]:
+        live_toggle = st.toggle("Live updates", key="live_enabled")
+    with live_cols[1]:
+        manual_refresh_clicked = st.button("Manual Refresh", key="live_manual_refresh")
+    status_col = live_cols[2]
+    status_rendered = False
+
+    controller = live_store.get("controller")
+    manual_refresh_requested = False
+
+    if not live_toggle and live_store.get("enabled"):
+        _shutdown_live_controller()
+        controller = None
+        live_toggle = False
+    elif live_toggle:
+        try:
+            controller = _ensure_live_controller(symbol, interval, df)
+        except ValueError as exc:
+            status_col.warning(str(exc))
+            status_rendered = True
+            st.session_state["live_enabled"] = False
+            live_toggle = False
+            controller = None
+
+    live_store["enabled"] = live_toggle
+
+    if manual_refresh_clicked:
+        if controller is not None:
+            controller.manual_refresh()
+            manual_refresh_requested = True
+        else:
+            status_col.info("Enable live updates to refresh data.")
+            status_rendered = True
+
+    snapshot = None
+    if controller is not None and live_toggle:
+        snapshot = controller.snapshot(force_full=manual_refresh_requested)
+        live_store["last_snapshot"] = snapshot
+        status = snapshot.status
+
+        if status.state == StreamState.CONNECTED:
+            status_col.markdown("🟢 **Connected**")
+        elif status.state == StreamState.RECONNECTING:
+            status_col.markdown("🟠 **Reconnecting**")
+        elif status.state == StreamState.CONNECTING:
+            status_col.markdown("🟡 **Connecting**")
+        else:
+            status_col.markdown("⚪️ **Stopped**")
+
+        status_rendered = True
+
+        if status.last_event_time is not None:
+            ts = status.last_event_time.astimezone(UTC)
+            status_col.caption(f"Last update: {ts:%Y-%m-%d %H:%M:%S %Z}")
+
+        if status.last_error:
+            st.warning(f"Live stream issue: {status.last_error}")
+
+        st.session_state["data"] = snapshot.data
+        df = snapshot.data
+
+        if snapshot.result is None and not controller.has_engine():
+            status_col.caption("Run a backtest to enable live signal recomputation.")
+        elif snapshot.result is not None:
+            st.session_state["smoothed"] = snapshot.result.smoothed
+            st.session_state["long_stop"] = snapshot.result.long_stop
+            st.session_state["long_profit"] = snapshot.result.long_profit
+            st.session_state["signals"] = snapshot.result.signals
+
+            if live_store.get("config") is not None and snapshot.used_full_recompute:
+                config_obj = st.session_state.get("config")
+                if config_obj is not None and len(df) > 0:
+                    backtest_result = run_backtest(
+                        signals=snapshot.result.signals,
+                        open_prices=df["open"].values,
+                        high_prices=df["high"].values,
+                        low_prices=df["low"].values,
+                        close_prices=df["close"].values,
+                        timestamps=df["open_time"],
+                        config=config_obj,
+                    )
+                    st.session_state["backtest_result"] = backtest_result
+    if not status_rendered:
+        status_col.info("Live updates disabled.")
 
     st.markdown("---")
     st.subheader("⚙️ Backtest Configuration")
@@ -523,6 +693,39 @@ if "data" in st.session_state and not st.session_state["data"].empty:
                 st.session_state["long_profit"] = long_profit
                 st.session_state["signals"] = signals
                 st.session_state["config"] = config
+
+                if st.session_state.get("live_enabled"):
+                    live_store = _live_store()
+                    controller = live_store.get("controller")
+                    if controller is not None:
+                        live_config = LiveComputationConfig(
+                            min_trend_bars=min_trend_bars,
+                            cutoff_scale=cutoff_scale,
+                            stop_type=stop_type,
+                            atr_period=atr_period,
+                            residual_window=residual_window,
+                            k_stop=k_stop,
+                            k_profit=k_profit,
+                            slope_threshold=slope_threshold,
+                            slope_lookback=slope_lookback,
+                        )
+                        live_store["config"] = live_config
+                        engine_result = controller.configure(live_config, df)
+                        st.session_state["smoothed"] = engine_result.smoothed
+                        st.session_state["long_stop"] = engine_result.long_stop
+                        st.session_state["long_profit"] = engine_result.long_profit
+                        st.session_state["signals"] = engine_result.signals
+
+                        result = run_backtest(
+                            signals=engine_result.signals,
+                            open_prices=open_prices,
+                            high_prices=high,
+                            low_prices=low,
+                            close_prices=close,
+                            timestamps=timestamps,
+                            config=config,
+                        )
+                        st.session_state["backtest_result"] = result
 
                 st.success(f"Backtest complete! {result.metrics['n_trades']} trades executed.")
 
@@ -1036,3 +1239,12 @@ else:
 
 current_config = _current_config_from_session()
 _persist_last_state(current_config)
+
+live_state = st.session_state.get("_live_state")
+if (
+    st.session_state.get("live_enabled")
+    and live_state
+    and live_state.get("controller") is not None
+):
+    time.sleep(settings.live_ui_poll_interval_seconds)
+    st.experimental_rerun()
