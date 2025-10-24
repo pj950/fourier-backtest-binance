@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -25,11 +25,8 @@ class BinanceClient:
 
     @retry(
         stop=stop_after_attempt(settings.max_retry_attempts),
-        wait=wait_exponential(
-            multiplier=settings.retry_initial_wait,
-            max=settings.retry_max_wait
-        ),
-        reraise=True
+        wait=wait_exponential(multiplier=settings.retry_initial_wait, max=settings.retry_max_wait),
+        reraise=True,
     )
     def fetch_klines(
         self,
@@ -58,33 +55,29 @@ class BinanceClient:
         return result
 
     def fetch_all_klines(
-        self,
-        symbol: str,
-        interval: str,
-        start_time: datetime,
-        end_time: datetime
+        self, symbol: str, interval: str, start_time: datetime, end_time: datetime
     ) -> list[list[Any]]:
         all_klines: list[list[Any]] = []
         current_start = start_time
-        
+
         while current_start < end_time:
             klines = self.fetch_klines(
                 symbol=symbol,
                 interval=interval,
                 start_time=current_start,
                 end_time=end_time,
-                limit=1000
+                limit=1000,
             )
-            
+
             if not klines:
                 break
-            
+
             all_klines.extend(klines)
-            
+
             last_close_time = klines[-1][6]
             current_start = timestamp_to_datetime(last_close_time + 1)
-            
+
             if len(klines) < 1000:
                 break
-        
+
         return all_klines

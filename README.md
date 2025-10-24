@@ -1,12 +1,16 @@
 # Binance Fourier Backtester
 
-A Python 3.11 + Streamlit application for fetching, caching, and visualizing Binance OHLCV data with support for incremental updates and gap detection.
+A Python 3.11 + Streamlit application for fetching, caching, and visualizing Binance OHLCV data with advanced Fourier analysis and spectral smoothing capabilities.
 
 ## Features
 
 - **Data Fetching**: Fetch 30m, 1h, and 4h klines from Binance REST API with automatic retries and rate limiting
 - **Smart Caching**: Parquet-based caching with incremental updates and automatic gap detection/backfill
-- **Interactive UI**: Streamlit-based interface with candlestick charts, volume bars, and data exploration
+- **DCT Smoothing**: Discrete Cosine Transform-based low-pass smoothing with mirrored padding and tapered cutoff
+- **FFT Spectrum Analysis**: Global power spectrum with dominant frequency peaks labeled in bars/hours
+- **Sliding Window PSD**: Welch's method for local dominant period extraction over time
+- **Spectral Heatmaps**: Time-frequency analysis showing how dominant periods evolve
+- **Interactive UI**: Streamlit-based interface with real-time parameter adjustment
 - **Robust Error Handling**: Exponential backoff retries with configurable limits
 - **Type Safety**: Full type hints with mypy validation
 
@@ -57,6 +61,9 @@ Key configuration options:
 │   └── ui/
 │       └── main.py              # Streamlit UI entry point
 ├── core/
+│   ├── analysis/
+│   │   ├── fourier.py           # DCT-based smoothing functions
+│   │   └── spectral.py          # FFT/Welch PSD analysis
 │   ├── data/
 │   │   ├── binance_client.py    # Binance API client
 │   │   ├── cache.py             # Parquet caching with gap detection
@@ -66,7 +73,9 @@ Key configuration options:
 ├── config/
 │   └── settings.py              # Configuration management
 ├── tests/
-│   └── test_data_fetch_cache.py # Unit tests
+│   ├── test_data_fetch_cache.py # Data layer tests
+│   ├── test_fourier.py          # Fourier smoothing tests
+│   └── test_spectral.py         # Spectral analysis tests
 ├── Dockerfile                   # Docker configuration
 ├── pyproject.toml              # Poetry dependencies
 └── README.md                   # This file
@@ -88,7 +97,17 @@ Key configuration options:
 
 4. Click "Load Data" to fetch and visualize the OHLCV data
 
-5. The first load will fetch historical data from 2020-01-01. Subsequent loads use cached data with incremental updates.
+5. Configure Fourier analysis parameters:
+   - **Min Trend Period**: Minimum period to preserve (in hours)
+   - **Cutoff Scale**: Smoothing aggressiveness (higher = more smoothing)
+   - **Window Length**: Bars per window for Welch PSD (64-512)
+   - **Window Overlap**: Overlap between consecutive windows (0-75%)
+
+6. Enable visualizations:
+   - **DCT Smoothing**: Shows smoothed price overlaid on candlesticks
+   - **FFT Spectrum**: Global frequency analysis with dominant peaks
+   - **Sliding Window Dominant Period**: Time-varying dominant cycles
+   - **Welch PSD Heatmap**: Time-frequency spectral density map
 
 ## Data Caching
 
@@ -138,7 +157,9 @@ pytest
 
 ## API Reference
 
-### `load_klines(symbol, interval, start, end, force_refresh=False)`
+### Data Loading
+
+#### `load_klines(symbol, interval, start, end, force_refresh=False)`
 
 Load OHLCV data for a given symbol and time range.
 
@@ -151,6 +172,73 @@ Load OHLCV data for a given symbol and time range.
 
 **Returns:**
 - `pd.DataFrame`: OHLCV data with columns: open_time, open, high, low, close, volume, quote_volume, trades, close_time
+
+### Fourier Analysis
+
+#### `dct_lowpass_smooth(signal, cutoff_freq, taper_width=0.1, padding_ratio=0.2)`
+
+Apply DCT-based low-pass smoothing with mirrored padding.
+
+**Parameters:**
+- `signal` (np.ndarray): 1D input signal
+- `cutoff_freq` (float): Cutoff frequency as fraction of Nyquist (0.0 to 1.0)
+- `taper_width` (float): Width of taper region as fraction of cutoff
+- `padding_ratio` (float): Ratio of signal length for mirrored padding
+
+**Returns:**
+- `np.ndarray`: Smoothed signal (same length as input)
+
+#### `smooth_price_series(prices, min_period_bars, cutoff_scale=1.0, taper_width=0.1)`
+
+Smooth a price series using DCT low-pass filter.
+
+**Parameters:**
+- `prices` (np.ndarray): Price array
+- `min_period_bars` (int): Minimum trend period to preserve (in bars)
+- `cutoff_scale` (float): Scale factor for cutoff frequency
+- `taper_width` (float): Width of taper region
+
+**Returns:**
+- `np.ndarray`: Smoothed price series
+
+### Spectral Analysis
+
+#### `compute_fft_spectrum(signal, sampling_rate=1.0)`
+
+Compute FFT power spectrum of a signal.
+
+**Parameters:**
+- `signal` (np.ndarray): Input signal
+- `sampling_rate` (float): Sampling rate (bars per unit time)
+
+**Returns:**
+- `tuple[np.ndarray, np.ndarray]`: Frequencies and power spectrum
+
+#### `compute_welch_psd(signal, window_length=256, overlap_ratio=0.5, sampling_rate=1.0)`
+
+Compute power spectral density using Welch's method.
+
+**Parameters:**
+- `signal` (np.ndarray): Input signal
+- `window_length` (int): Length of each window segment
+- `overlap_ratio` (float): Overlap between segments (0.0 to 1.0)
+- `sampling_rate` (float): Sampling rate
+
+**Returns:**
+- `tuple[np.ndarray, np.ndarray]`: Frequencies and power spectral density
+
+#### `compute_sliding_dominant_period(signal, window_length=256, overlap_ratio=0.5, sampling_rate=1.0)`
+
+Compute dominant period over time using sliding windows.
+
+**Parameters:**
+- `signal` (np.ndarray): Input signal
+- `window_length` (int): Window length for each PSD computation
+- `overlap_ratio` (float): Overlap between windows
+- `sampling_rate` (float): Sampling rate
+
+**Returns:**
+- `tuple[np.ndarray, np.ndarray]`: Time indices and dominant periods
 
 ## License
 
