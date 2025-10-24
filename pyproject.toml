@@ -1,0 +1,54 @@
+[tool.poetry]
+name = "binance-fourier-backtester"
+version = "0.1.0"
+description = "Binance Fourier backtesting application"
+authors = ["engine-labs-app[bot] <140088366+engine-labs-app[bot]@users.noreply.github.com>"]
+readme = "README.md"
+packages = [
+    { include = "app" },
+    { include = "core" },
+    { include = "config" },
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+streamlit = "^1.28.0"
+numpy = "^1.26.0"
+pandas = "^2.1.0"
+scipy = "^1.11.0"
+plotly = "^5.17.0"
+httpx = "^0.25.0"
+tenacity = "^8.2.0"
+pyarrow = "^14.0.0"
+duckdb = "^0.9.0"
+pydantic-settings = "^2.0.0"
+python-dotenv = "^1.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+ruff = "^0.1.0"
+mypy = "^1.6.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = []
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_equality = true
