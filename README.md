@@ -15,15 +15,19 @@ A Python 3.11 + Streamlit application for fetching, caching, and visualizing Bin
 ### Backtesting & Trading
 - **Dynamic Stop Bands**: ATR-based and residual-based stops with configurable multipliers
 - **Signal Generation**: Trend-following signals with slope and volatility filters
+- **Multi-Timeframe Confirmation**: Execute on 30m with 1h/4h trend filters for higher probability setups
+- **Advanced Exits**: Time-based stops, partial take-profit scaling, slope reversal confirmation
+- **Dynamic Position Sizing**: Volatility-based (ATR/sigma), fixed risk, optional pyramiding
+- **Short/Futures Trading**: Optional short trading mode with configurable fees per venue
 - **Vectorized Backtester**: Fast, realistic backtesting with next-bar fills, fees, and slippage
 - **Performance Metrics**: 19 metrics including Sharpe, Sortino, win rate, profit factor, and more
-- **Trade Analysis**: MAE/MFE tracking, equity curve, complete trade logs
+- **Trade Analysis**: MAE/MFE tracking, equity curve, complete trade logs with exit reasons
 
 ### Infrastructure
 - **Interactive UI**: Streamlit-based interface with real-time parameter adjustment
 - **Robust Error Handling**: Exponential backoff retries with configurable limits
 - **Type Safety**: Full type hints with mypy validation
-- **Comprehensive Testing**: 79 tests covering all components
+- **Comprehensive Testing**: 100+ tests covering all components including M7 enhancements
 
 ## Installation
 
@@ -72,26 +76,42 @@ Key configuration options:
 .
 ├── app/
 │   └── ui/
-│       └── main.py              # Streamlit UI entry point
+│       └── main.py                 # Streamlit UI entry point
 ├── core/
 │   ├── analysis/
-│   │   ├── fourier.py           # DCT-based smoothing functions
-│   │   └── spectral.py          # FFT/Welch PSD analysis
+│   │   ├── fourier.py              # DCT-based smoothing functions
+│   │   ├── spectral.py             # FFT/Welch PSD analysis
+│   │   ├── signals.py              # Signal generation
+│   │   ├── stops.py                # Stop loss/take profit
+│   │   ├── mtf.py                  # Multi-timeframe analysis (M7)
+│   │   ├── exits.py                # Additional exit strategies (M7)
+│   │   └── sizing.py               # Position sizing (M7)
+│   ├── backtest/
+│   │   └── engine.py               # Backtesting engine with M7 enhancements
 │   ├── data/
-│   │   ├── binance_client.py    # Binance API client
-│   │   ├── cache.py             # Parquet caching with gap detection
-│   │   └── loader.py            # Unified data loading API
+│   │   ├── binance_client.py       # Binance API client
+│   │   ├── cache.py                # Parquet caching with gap detection
+│   │   └── loader.py               # Unified data loading API
 │   └── utils/
-│       └── time.py              # UTC time utilities
+│       └── time.py                 # UTC time utilities
 ├── config/
-│   └── settings.py              # Configuration management
+│   └── settings.py                 # Configuration management
+├── examples/
+│   └── mtf_strategy_example.py    # Complete MTF strategy example (M7)
 ├── tests/
-│   ├── test_data_fetch_cache.py # Data layer tests
-│   ├── test_fourier.py          # Fourier smoothing tests
-│   └── test_spectral.py         # Spectral analysis tests
-├── Dockerfile                   # Docker configuration
-├── pyproject.toml              # Poetry dependencies
-└── README.md                   # This file
+│   ├── test_backtest.py            # Backtest engine tests
+│   ├── test_backtest_enhanced.py   # Enhanced backtest tests (M7)
+│   ├── test_data_fetch_cache.py    # Data layer tests
+│   ├── test_fourier.py             # Fourier smoothing tests
+│   ├── test_spectral.py            # Spectral analysis tests
+│   ├── test_mtf.py                 # Multi-timeframe tests (M7)
+│   ├── test_exits.py               # Exit strategies tests (M7)
+│   ├── test_sizing.py              # Position sizing tests (M7)
+│   └── test_strategy_integration.py # Integration tests (M7)
+├── IMPLEMENTATION_M7.md            # M7 features documentation
+├── Dockerfile                      # Docker configuration
+├── pyproject.toml                  # Poetry dependencies
+└── README.md                       # This file
 ```
 
 ## Usage
@@ -436,6 +456,45 @@ print(f"Sharpe ratio: {result.metrics['sharpe_ratio']:.2f}")
 print(f"Win rate: {result.metrics['win_rate']:.2%}")
 print(f"Number of trades: {result.metrics['n_trades']}")
 ```
+
+## M7 Strategy Enhancements
+
+The M7 milestone adds advanced trading strategy features. See [IMPLEMENTATION_M7.md](IMPLEMENTATION_M7.md) for detailed documentation.
+
+### Multi-Timeframe Strategy Example
+
+```python
+from core.analysis.mtf import align_timeframes, compute_trend_direction, check_mtf_alignment
+from core.backtest.engine import BacktestConfig, run_backtest_enhanced
+
+# Load multiple timeframes
+df_30m = load_klines("BTCUSDT", "30m", start_date, end_date)
+df_1h = load_klines("BTCUSDT", "1h", start_date, end_date)
+df_4h = load_klines("BTCUSDT", "4h", start_date, end_date)
+
+# Align and compute trends
+df_aligned = align_timeframes(df_30m, df_1h, "30m", "1h")
+trend_30m = compute_trend_direction(close, smoothed_30m)
+trend_1h = compute_trend_direction(close, smoothed_1h)
+trend_4h = compute_trend_direction(close, smoothed_4h)
+
+# Filter by alignment
+aligned_long, aligned_short = check_mtf_alignment(trend_30m, trend_1h, trend_4h)
+
+# Run enhanced backtest with dynamic sizing
+config = BacktestConfig(
+    initial_capital=10000.0,
+    allow_shorts=False,
+    max_bars_held=100,
+    sizing_mode="volatility",
+    volatility_target=0.02,
+)
+
+result = run_backtest_enhanced(signals, open_prices, high, low, close, timestamps, 
+                               atr=atr, stop_levels=stops, config=config)
+```
+
+For a complete working example, see `examples/mtf_strategy_example.py`.
 
 ## License
 
