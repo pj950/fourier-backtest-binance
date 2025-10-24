@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     binance_rate_limit_per_minute: int = 1200
     binance_request_timeout: int = 30
     binance_klines_limit: int = 1000
+    binance_ws_base_url: str = "wss://stream.binance.com:9443/ws"
+    binance_ws_ping_interval: float = 15.0
+    binance_ws_backoff_initial: float = 1.0
+    binance_ws_backoff_max: float = 60.0
 
     default_fee_rate: float = 0.001
     default_slippage_bps: float = 5.0
@@ -23,6 +27,9 @@ class Settings(BaseSettings):
     max_retry_attempts: int = 5
     retry_initial_wait: float = 1.0
     retry_max_wait: float = 60.0
+
+    live_backfill_interval_seconds: int = 900
+    live_ui_poll_interval_seconds: float = 5.0
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
