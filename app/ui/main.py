@@ -1,3 +1,4 @@
+import traceback
 from datetime import UTC, datetime
 from io import StringIO
 
@@ -6,6 +7,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from config.presets import PresetError, PresetManager, UIConfig
+from config.settings import settings
 from core.analysis.fourier import smooth_price_series
 from core.analysis.signals import generate_signals_with_stops
 from core.analysis.spectral import (
@@ -18,50 +21,279 @@ from core.analysis.spectral import (
 )
 from core.analysis.stops import compute_atr_stops, compute_residual_stops
 from core.backtest.engine import BacktestConfig, run_backtest, trades_to_dataframe
-from core.data.loader import load_klines
+from core.data.exceptions import (
+    BinanceRateLimitError,
+    BinanceRequestError,
+    BinanceTransientError,
+)
+from core.data.loader import SUPPORTED_INTERVALS, SUPPORTED_SYMBOLS, load_klines
+
+preset_manager = PresetManager(settings.preset_storage_path, settings.last_session_state_path)
+
+SYMBOL_OPTIONS = list(SUPPORTED_SYMBOLS)
+INTERVAL_OPTIONS = list(SUPPORTED_INTERVALS)
+STOP_TYPES = ["ATR", "Residual"]
+PRESET_PLACEHOLDER = "— Select Preset —"
+
+
+def _safe_index(options: list[str], value: str | None) -> int:
+    if value is None:
+        return 0
+    try:
+        return options.index(value)
+    except ValueError:
+        return 0
+
+
+def _apply_config_to_session(config: UIConfig) -> None:
+    st.session_state["symbol"] = config.symbol
+    st.session_state["interval"] = config.interval
+    st.session_state["start_date"] = config.start_date
+    st.session_state["end_date"] = config.end_date
+    st.session_state["force_refresh"] = config.force_refresh
+    st.session_state["min_trend_hours"] = config.min_trend_hours
+    st.session_state["cutoff_scale"] = config.cutoff_scale
+    st.session_state["stop_type"] = config.stop_type
+    st.session_state["atr_period"] = config.atr_period
+    st.session_state["residual_window"] = config.residual_window
+    st.session_state["k_stop"] = config.k_stop
+    st.session_state["k_profit"] = config.k_profit
+    st.session_state["slope_threshold"] = config.slope_threshold
+    st.session_state["slope_lookback"] = config.slope_lookback
+    st.session_state["initial_capital"] = config.initial_capital
+    st.session_state["fee_rate"] = config.fee_rate
+    st.session_state["slippage"] = config.slippage
+    st.session_state["fee_rate_percent"] = round(config.fee_rate * 100, 4)
+    st.session_state["slippage_percent"] = round(config.slippage * 100, 4)
+
+
+def _initialize_session_state() -> None:
+    if st.session_state.get("ui_initialized"):
+        return
+
+    try:
+        last_state = preset_manager.load_last_state()
+    except PresetError as exc:
+        st.warning(f"Unable to restore last session state: {exc}")
+        last_state = None
+
+    config = last_state or UIConfig()
+    _apply_config_to_session(config)
+
+    st.session_state.setdefault("active_preset", None)
+    st.session_state.setdefault("preset_selection", PRESET_PLACEHOLDER)
+    st.session_state.setdefault("preset_name_input", "")
+    st.session_state.setdefault("preset_error_reported", False)
+    st.session_state.setdefault("last_state_error_reported", False)
+    st.session_state["ui_initialized"] = True
+
+
+def _current_config_from_session() -> UIConfig:
+    defaults = UIConfig()
+    return UIConfig(
+        symbol=st.session_state.get("symbol", defaults.symbol),
+        interval=st.session_state.get("interval", defaults.interval),
+        start_date=st.session_state.get("start_date", defaults.start_date),
+        end_date=st.session_state.get("end_date", defaults.end_date),
+        force_refresh=st.session_state.get("force_refresh", defaults.force_refresh),
+        min_trend_hours=float(st.session_state.get("min_trend_hours", defaults.min_trend_hours)),
+        cutoff_scale=float(st.session_state.get("cutoff_scale", defaults.cutoff_scale)),
+        stop_type=st.session_state.get("stop_type", defaults.stop_type),
+        atr_period=int(st.session_state.get("atr_period", defaults.atr_period)),
+        residual_window=int(st.session_state.get("residual_window", defaults.residual_window)),
+        k_stop=float(st.session_state.get("k_stop", defaults.k_stop)),
+        k_profit=float(st.session_state.get("k_profit", defaults.k_profit)),
+        slope_threshold=float(st.session_state.get("slope_threshold", defaults.slope_threshold)),
+        slope_lookback=int(st.session_state.get("slope_lookback", defaults.slope_lookback)),
+        initial_capital=float(st.session_state.get("initial_capital", defaults.initial_capital)),
+        fee_rate=float(st.session_state.get("fee_rate", defaults.fee_rate)),
+        slippage=float(st.session_state.get("slippage", defaults.slippage)),
+    )
+
+
+def _list_presets() -> list[str]:
+    try:
+        presets = preset_manager.list_presets()
+    except PresetError as exc:
+        if not st.session_state.get("preset_error_reported"):
+            st.warning(f"Unable to load saved presets: {exc}")
+            st.session_state["preset_error_reported"] = True
+        return []
+    else:
+        st.session_state["preset_error_reported"] = False
+        return presets
+
+
+def _persist_last_state(config: UIConfig) -> None:
+    try:
+        preset_manager.save_last_state(config)
+    except PresetError as exc:
+        if not st.session_state.get("last_state_error_reported"):
+            st.warning(f"Unable to persist last session state: {exc}")
+            st.session_state["last_state_error_reported"] = True
+    else:
+        st.session_state["last_state_error_reported"] = False
+
 
 st.set_page_config(page_title="Binance Fourier Backtester", layout="wide")
+
+_initialize_session_state()
 
 st.title("Binance Fourier Backtester")
 
 st.markdown("---")
+
+with st.expander("💾 Presets & Persistence", expanded=False):
+    available_presets = _list_presets()
+    preset_options = [PRESET_PLACEHOLDER, *available_presets]
+    current_selection = st.session_state.get("preset_selection", PRESET_PLACEHOLDER)
+    preset_selection = st.selectbox(
+        "Saved presets",
+        preset_options,
+        index=_safe_index(preset_options, current_selection),
+        key="preset_selection",
+    )
+
+    preset_name = st.text_input(
+        "Preset name",
+        value=st.session_state.get("preset_name_input", ""),
+        key="preset_name_input",
+        placeholder="e.g. Trend following ATR",
+    )
+
+    load_col, save_col, delete_col = st.columns(3)
+
+    with load_col:
+        if st.button("Load preset", use_container_width=True):
+            if preset_selection == PRESET_PLACEHOLDER:
+                st.info("Select a preset to load.")
+            else:
+                try:
+                    config = preset_manager.load_preset(preset_selection)
+                except PresetError as exc:
+                    st.error(f"Failed to load preset '{preset_selection}': {exc}")
+                else:
+                    _apply_config_to_session(config)
+                    st.session_state["active_preset"] = preset_selection
+                    st.session_state["preset_name_input"] = preset_selection
+                    st.success(f"Loaded preset '{preset_selection}'")
+
+    with save_col:
+        if st.button("Save preset", use_container_width=True):
+            try:
+                config = _current_config_from_session()
+                preset_manager.save_preset(preset_name, config)
+            except PresetError as exc:
+                st.error(f"Unable to save preset: {exc}")
+            else:
+                saved_name = preset_name.strip()
+                st.success(f"Saved preset '{saved_name}'")
+                st.session_state["active_preset"] = saved_name
+                st.session_state["preset_selection"] = saved_name
+                st.session_state["preset_name_input"] = saved_name
+
+    with delete_col:
+        if st.button("Delete preset", use_container_width=True):
+            if preset_selection == PRESET_PLACEHOLDER:
+                st.info("Select a preset to delete.")
+            else:
+                try:
+                    preset_manager.delete_preset(preset_selection)
+                except PresetError as exc:
+                    st.error(f"Unable to delete preset: {exc}")
+                else:
+                    st.success(f"Deleted preset '{preset_selection}'")
+                    if st.session_state.get("active_preset") == preset_selection:
+                        st.session_state["active_preset"] = None
+                    st.session_state["preset_selection"] = PRESET_PLACEHOLDER
+                    st.session_state["preset_name_input"] = ""
+
+    active_label = st.session_state.get("active_preset") or "Last session"
+    st.caption(f"Active preset: {active_label}")
+    st.caption("Latest parameter choices are automatically stored as your last session.")
+
 st.subheader("📊 Data Configuration")
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT"], index=0)
+    symbol = st.selectbox(
+        "Symbol",
+        SYMBOL_OPTIONS,
+        index=_safe_index(SYMBOL_OPTIONS, st.session_state.get("symbol")),
+        key="symbol",
+    )
 
 with col2:
-    interval = st.selectbox("Interval", ["30m", "1h", "4h"], index=1)
+    interval = st.selectbox(
+        "Interval",
+        INTERVAL_OPTIONS,
+        index=_safe_index(INTERVAL_OPTIONS, st.session_state.get("interval")),
+        key="interval",
+    )
 
 with col3:
-    start_date = st.date_input("Start Date", value=datetime(2024, 1, 1).date())
+    start_date = st.date_input(
+        "Start Date",
+        value=st.session_state.get("start_date"),
+        key="start_date",
+    )
 
 with col4:
-    end_date = st.date_input("End Date", value=datetime.now().date())
+    end_date = st.date_input(
+        "End Date",
+        value=st.session_state.get("end_date"),
+        key="end_date",
+    )
 
-force_refresh = st.checkbox("Force Refresh (bypass cache)", value=False)
+force_refresh = st.checkbox(
+    "Force Refresh (bypass cache)",
+    value=bool(st.session_state.get("force_refresh", False)),
+    key="force_refresh",
+)
 
 if st.button("Load Data"):
-    with st.spinner("Loading data..."):
-        try:
-            start_dt = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=UTC)
-            end_dt = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=UTC)
+    start_date_value = st.session_state.get("start_date")
+    end_date_value = st.session_state.get("end_date")
 
-            df = load_klines(
-                symbol=symbol,
-                interval=interval,
-                start=start_dt,
-                end=end_dt,
-                force_refresh=force_refresh,
-            )
-
-            st.session_state["data"] = df
-            st.session_state["backtest_result"] = None
-            st.success(f"Loaded {len(df)} candles")
-        except Exception as e:
-            st.error(f"Error loading data: {e}")
+    if start_date_value is None or end_date_value is None:
+        st.error("Both start and end dates must be provided.")
+    elif start_date_value > end_date_value:
+        st.error("Start date must be earlier than end date.")
+    else:
+        with st.spinner("Loading data..."):
+            start_dt = datetime.combine(start_date_value, datetime.min.time()).replace(tzinfo=UTC)
+            end_dt = datetime.combine(end_date_value, datetime.max.time()).replace(tzinfo=UTC)
+            try:
+                df = load_klines(
+                    symbol=symbol,
+                    interval=interval,
+                    start=start_dt,
+                    end=end_dt,
+                    force_refresh=force_refresh,
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+            except BinanceRateLimitError as exc:
+                wait_hint = f" Please retry in ~{int(exc.retry_after)} seconds." if exc.retry_after else ""
+                st.error(f"Binance rate limit reached.{wait_hint}")
+                if exc.used_weight is not None:
+                    st.caption(f"Current 1 minute weight usage: {exc.used_weight}")
+                st.info("Tip: Narrow the date range or disable force refresh to reduce API requests.")
+            except BinanceRequestError as exc:
+                st.error(f"Binance rejected the request: {exc}")
+            except BinanceTransientError as exc:
+                st.warning(f"Temporary issue fetching data: {exc}. Please try again.")
+            except Exception:
+                st.error("Unexpected error while loading data.")
+                st.code(traceback.format_exc())
+            else:
+                st.session_state["data"] = df
+                st.session_state["backtest_result"] = None
+                if df.empty:
+                    st.warning("No data returned for the selected range. Try adjusting the dates.")
+                else:
+                    st.success(f"Loaded {len(df)} candles")
 
 if "data" in st.session_state and not st.session_state["data"].empty:
     df = st.session_state["data"]
@@ -69,41 +301,68 @@ if "data" in st.session_state and not st.session_state["data"].empty:
     st.markdown("---")
     st.subheader("⚙️ Backtest Configuration")
 
-    col1, col2, col3, col4 = st.columns(4)
-
     interval_hours = {"30m": 0.5, "1h": 1.0, "4h": 4.0}
     hours_per_bar = interval_hours.get(interval, 1.0)
+
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         min_trend_hours = st.number_input(
             "Min Trend Period (hours)",
             min_value=1.0,
             max_value=720.0,
-            value=24.0,
+            value=float(st.session_state.get("min_trend_hours", 24.0)),
             step=1.0,
+            key="min_trend_hours",
         )
-        min_trend_bars = int(min_trend_hours / hours_per_bar)
+    min_trend_bars = max(1, int(min_trend_hours / hours_per_bar))
 
     with col2:
         cutoff_scale = st.slider(
             "Cutoff Scale",
             min_value=0.5,
             max_value=3.0,
-            value=1.0,
+            value=float(st.session_state.get("cutoff_scale", 1.0)),
             step=0.1,
             help="Higher = more aggressive smoothing",
+            key="cutoff_scale",
         )
 
     with col3:
-        stop_type = st.selectbox("Stop Type", ["ATR", "Residual"], index=0)
+        stop_type = st.selectbox(
+            "Stop Type",
+            STOP_TYPES,
+            index=_safe_index(STOP_TYPES, st.session_state.get("stop_type")),
+            key="stop_type",
+        )
 
     with col4:
+        atr_period_default = int(st.session_state.get("atr_period", 14))
+        residual_window_default = int(st.session_state.get("residual_window", 20))
         if stop_type == "ATR":
-            atr_period = st.number_input("ATR Period", min_value=5, max_value=50, value=14, step=1)
-        else:
-            residual_window = st.number_input(
-                "Residual Window", min_value=5, max_value=100, value=20, step=5
+            atr_period = int(
+                st.number_input(
+                    "ATR Period",
+                    min_value=5,
+                    max_value=50,
+                    value=atr_period_default,
+                    step=1,
+                    key="atr_period",
+                )
             )
+            residual_window = residual_window_default
+        else:
+            residual_window = int(
+                st.number_input(
+                    "Residual Window",
+                    min_value=5,
+                    max_value=100,
+                    value=residual_window_default,
+                    step=5,
+                    key="residual_window",
+                )
+            )
+            atr_period = atr_period_default
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -112,8 +371,9 @@ if "data" in st.session_state and not st.session_state["data"].empty:
             "Stop Loss Multiplier",
             min_value=0.5,
             max_value=5.0,
-            value=2.0,
+            value=float(st.session_state.get("k_stop", 2.0)),
             step=0.5,
+            key="k_stop",
         )
 
     with col2:
@@ -121,8 +381,9 @@ if "data" in st.session_state and not st.session_state["data"].empty:
             "Take Profit Multiplier",
             min_value=1.0,
             max_value=10.0,
-            value=3.0,
+            value=float(st.session_state.get("k_profit", 3.0)),
             step=0.5,
+            key="k_profit",
         )
 
     with col3:
@@ -130,18 +391,22 @@ if "data" in st.session_state and not st.session_state["data"].empty:
             "Slope Threshold",
             min_value=0.0,
             max_value=10.0,
-            value=0.0,
+            value=float(st.session_state.get("slope_threshold", 0.0)),
             step=0.1,
             help="Minimum slope for entry",
+            key="slope_threshold",
         )
 
     with col4:
-        slope_lookback = st.number_input(
-            "Slope Lookback (bars)",
-            min_value=1,
-            max_value=10,
-            value=1,
-            step=1,
+        slope_lookback = int(
+            st.number_input(
+                "Slope Lookback (bars)",
+                min_value=1,
+                max_value=10,
+                value=int(st.session_state.get("slope_lookback", 1)),
+                step=1,
+                key="slope_lookback",
+            )
         )
 
     col1, col2, col3 = st.columns(3)
@@ -150,28 +415,47 @@ if "data" in st.session_state and not st.session_state["data"].empty:
         initial_capital = st.number_input(
             "Initial Capital",
             min_value=1000.0,
-            max_value=1000000.0,
-            value=10000.0,
+            max_value=1_000_000.0,
+            value=float(st.session_state.get("initial_capital", 10_000.0)),
             step=1000.0,
+            key="initial_capital",
         )
 
     with col2:
-        fee_rate = st.number_input(
+        fee_rate_percent_default = float(
+            st.session_state.get(
+                "fee_rate_percent",
+                st.session_state.get("fee_rate", settings.default_fee_rate) * 100,
+            )
+        )
+        fee_rate_percent = st.number_input(
             "Fee Rate (%)",
             min_value=0.0,
             max_value=1.0,
-            value=0.1,
+            value=fee_rate_percent_default,
             step=0.01,
-        ) / 100.0
+            key="fee_rate_percent",
+        )
+        fee_rate = fee_rate_percent / 100.0
+        st.session_state["fee_rate"] = fee_rate
 
     with col3:
-        slippage = st.number_input(
+        slippage_decimal_default = float(
+            st.session_state.get("slippage", settings.default_slippage_bps / 10_000)
+        )
+        slippage_percent_default = float(
+            st.session_state.get("slippage_percent", slippage_decimal_default * 100)
+        )
+        slippage_percent = st.number_input(
             "Slippage (%)",
             min_value=0.0,
             max_value=1.0,
-            value=0.05,
+            value=slippage_percent_default,
             step=0.01,
-        ) / 100.0
+            key="slippage_percent",
+        )
+        slippage = slippage_percent / 100.0
+        st.session_state["slippage"] = slippage
 
     if st.button("🚀 Run Backtest", type="primary"):
         with st.spinner("Running backtest..."):
@@ -244,7 +528,6 @@ if "data" in st.session_state and not st.session_state["data"].empty:
 
             except Exception as e:
                 st.error(f"Error running backtest: {e}")
-                import traceback
                 st.code(traceback.format_exc())
 
     if "backtest_result" in st.session_state and st.session_state["backtest_result"] is not None:
@@ -750,3 +1033,6 @@ if "data" in st.session_state and not st.session_state["data"].empty:
         st.dataframe(df, use_container_width=True)
 else:
     st.info("👆 Select parameters and click 'Load Data' to get started")
+
+current_config = _current_config_from_session()
+_persist_last_state(current_config)

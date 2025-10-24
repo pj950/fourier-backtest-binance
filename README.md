@@ -63,6 +63,8 @@ Key configuration options:
 - `MAX_RETRY_ATTEMPTS`: Number of retry attempts for failed requests
 - `DEFAULT_FEE_RATE`: Default trading fee rate
 - `CACHE_DIR`: Directory for storing cached Parquet files
+- `PRESET_STORAGE_PATH`: Path to the YAML file that stores named parameter presets
+- `LAST_SESSION_STATE_PATH`: Path to the YAML file that persists the most recent UI state
 
 ## Project Structure
 
@@ -127,6 +129,18 @@ The application uses Parquet files to cache OHLCV data locally:
 - Incremental updates fetch only new data since the last cached bar
 - Gap detection automatically identifies and backfills missing data
 - Data is deduplicated and sorted by timestamp
+
+## Parameter Presets & Session Persistence
+
+Open the **💾 Presets & Persistence** expander in the Streamlit UI to:
+- Save the current configuration under a custom name
+- Load or delete previously saved presets
+- View which preset (or last session) is currently active
+
+The app automatically restores the last parameters you used on startup and keeps
+that state in sync as you adjust controls. Presets and the last session snapshot
+are stored as YAML files whose locations are configurable via the
+`PRESET_STORAGE_PATH` and `LAST_SESSION_STATE_PATH` environment variables.
 
 ## Testing
 
@@ -360,6 +374,16 @@ The `BacktestResult.metrics` dictionary contains:
 - `n_trades`, `n_wins`, `n_losses`, `win_rate`
 - `profit_factor`, `avg_win`, `avg_loss`
 - `avg_bars_held`, `avg_mae`, `avg_mfe`, `avg_mae_pct`, `avg_mfe_pct`
+
+## Troubleshooting
+
+### Binance Rate Limits
+
+If the UI reports a Binance rate limit error:
+- Wait for the suggested retry window before reloading data
+- Narrow the requested date range to reduce API calls
+- Leave caching enabled (disable **Force Refresh**) so repeated requests reuse local data
+- Avoid running multiple backtests with force refresh simultaneously
 
 ## Example Usage
 
