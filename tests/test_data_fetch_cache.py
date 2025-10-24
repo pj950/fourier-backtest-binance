@@ -1,8 +1,12 @@
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
+import pytest
 
+from config.settings import settings
+from core.data.binance_client import BinanceClient
 from core.data.cache import KlineCache, klines_to_dataframe
+from core.data.loader import load_klines
 
 
 def test_klines_to_dataframe() -> None:
@@ -129,3 +133,149 @@ def test_load_nonexistent_cache() -> None:
     cache = KlineCache("NONEXISTENT", "1h")
     df = cache.load()
     assert df is None
+
+
+def test_load_klines_validates_inputs() -> None:
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    end = datetime(2024, 1, 2, tzinfo=UTC)
+
+    with pytest.raises(ValueError):
+        load_klines("INVALID", "1h", start, end)
+
+    with pytest.raises(ValueError):
+        load_klines("BTCUSDT", "15m", start, end)
+
+    with pytest.raises(ValueError):
+        load_klines("BTCUSDT", "1h", end, start)
+
+
+def test_binance_client_paginates(monkeypatch) -> None:
+    client = BinanceClient()
+    base_ms = 1_700_000_000_000
+    step_ms = 3_600_000
+
+    def build_batch(start_ms: int, count: int) -> list[list[int | str]]:
+        batch: list[list[int | str]] = []
+        for idx in range(count):
+            open_ms = start_ms + idx * step_ms
+            close_ms = open_ms + step_ms - 1
+            batch.append(
+                [
+                    open_ms,
+                    "1.0",
+                    "1.0",
+                    "1.0",
+                    "1.0",
+                    "1.0",
+                    close_ms,
+                    "1.0",
+                    1,
+                    "0.0",
+                    "0.0",
+                    "0",
+                ]
+            )
+        return batch
+
+    responses = [
+        build_batch(base_ms, 1000),
+        build_batch(base_ms + 1000 * step_ms, 50),
+    ]
+    calls: list[tuple[datetime, datetime]] = []
+
+    def fake_fetch_klines(
+        self,
+        symbol: str,
+        interval: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int | None = None,
+    ) -> list[list[int | str]]:
+        calls.append((start_time, end_time))
+        return responses.pop(0)
+
+    monkeypatch.setattr(BinanceClient, "fetch_klines", fake_fetch_klines)
+
+    result = client.fetch_all_klines(
+        symbol="BTCUSDT",
+        interval="1h",
+        start_time=datetime.fromtimestamp(base_ms / 1000, tz=UTC),
+        end_time=datetime.fromtimestamp((base_ms + 1_050 * step_ms) / 1000, tz=UTC),
+    )
+
+    assert len(result) == 1050
+    assert len(calls) == 2
+    client.close()
+
+
+def test_ensure_range_fetches_missing(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "cache_dir", tmp_path)
+    cache = KlineCache("TESTUSDT", "1h")
+
+    existing_times = pd.date_range("2024-01-02", periods=5, freq="1h", tz=UTC)
+    existing_df = pd.DataFrame(
+        {
+            "open_time": existing_times,
+            "open": [100.0] * 5,
+            "high": [101.0] * 5,
+            "low": [99.0] * 5,
+            "close": [100.5] * 5,
+            "volume": [10.0] * 5,
+            "quote_volume": [1000.0] * 5,
+            "trades": [1] * 5,
+            "close_time": existing_times + timedelta(minutes=59, seconds=59),
+        }
+    )
+    cache.save(existing_df)
+
+    calls: list[tuple[datetime, datetime]] = []
+
+    def build_raw_klines(start_dt: datetime, count: int) -> list[list[int | str]]:
+        step_ms = 3_600_000
+        base_ms = int(start_dt.timestamp() * 1000)
+        batch: list[list[int | str]] = []
+        for idx in range(count):
+            open_ms = base_ms + idx * step_ms
+            close_ms = open_ms + step_ms - 1
+            batch.append(
+                [
+                    open_ms,
+                    "1.0",
+                    "1.0",
+                    "1.0",
+                    "1.0",
+                    "1.0",
+                    close_ms,
+                    "1.0",
+                    1,
+                    "0.0",
+                    "0.0",
+                    "0",
+                ]
+            )
+        return batch
+
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    end = datetime(2024, 1, 2, 4, tzinfo=UTC)
+
+    def fake_fetch_all(
+        self,
+        symbol: str,
+        interval: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> list[list[int | str]]:
+        calls.append((start_time, end_time))
+        if start_time == start:
+            return build_raw_klines(start, 24)
+        return []
+
+    monkeypatch.setattr(BinanceClient, "fetch_all_klines", fake_fetch_all)
+
+    result = cache.ensure_range(start_time=start, end_time=end)
+
+    assert calls
+    assert calls[0][0] == start
+    assert not result.empty
+    assert result.iloc[0]["open_time"] == pd.Timestamp(start)
+    assert result.iloc[-1]["open_time"] == pd.Timestamp(end)
