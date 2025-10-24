@@ -13,6 +13,16 @@ class BacktestConfig:
     slippage: float = 0.0005
     position_size_mode: str = "full"
     position_size_fraction: float = 1.0
+    allow_shorts: bool = False
+    max_bars_held: int | None = None
+    enable_partial_tp: bool = False
+    partial_tp_scales: list[tuple[float, float]] | None = None
+    enable_pyramiding: bool = False
+    max_pyramids: int = 3
+    pyramid_scale: float = 0.5
+    sizing_mode: str = "fixed"
+    volatility_target: float = 0.02
+    max_risk_per_trade: float = 0.02
 
 
 @dataclass
@@ -34,6 +44,9 @@ class Trade:
     mfe_pct: float
     bars_held: int
     fees: float
+    direction: int = 1
+    exit_reason: str = "signal"
+    partial_exits: list[tuple[int, float, float]] | None = None
 
 
 @dataclass
@@ -378,6 +391,224 @@ def compute_sortino_ratio(
 
     sortino = (mean_return - target_return) / downside_std * np.sqrt(periods_per_year)
     return sortino
+
+
+def run_backtest_enhanced(
+    signals: np.ndarray,
+    open_prices: np.ndarray,
+    high_prices: np.ndarray,
+    low_prices: np.ndarray,
+    close_prices: np.ndarray,
+    timestamps: pd.DatetimeIndex,
+    atr: np.ndarray | None = None,
+    stop_levels: np.ndarray | None = None,
+    config: BacktestConfig | None = None,
+) -> BacktestResult:
+    """
+    Run enhanced backtest with support for shorts, partial exits, time stops, and dynamic sizing.
+
+    Signals:
+    - 1: Enter long at next bar open
+    - -1: Exit position at next bar open (or enter short if allow_shorts=True)
+    - 0: Hold current position
+    - 2: Enter short at next bar open (if allow_shorts=True)
+    - -2: Exit short position
+
+    Args:
+        signals: Signal array
+        open_prices: Open prices
+        high_prices: High prices
+        low_prices: Low prices
+        close_prices: Close prices
+        timestamps: Timestamps for each bar
+        atr: ATR values for dynamic sizing (optional)
+        stop_levels: Stop loss levels (optional)
+        config: Backtest configuration
+
+    Returns:
+        BacktestResult with equity curve, trades, and metrics
+    """
+    if config is None:
+        config = BacktestConfig()
+
+    from core.analysis.exits import check_time_based_exit, compute_partial_tp_levels, check_partial_tp_hit
+    from core.analysis.sizing import compute_volatility_based_size, compute_fixed_risk_size
+
+    n = len(signals)
+    equity = np.full(n, config.initial_capital)
+    cash = config.initial_capital
+    position = 0.0
+    position_price = 0.0
+    position_entry_idx = -1
+    position_direction = 0
+
+    partial_tp_levels: list[tuple[float, float]] = []
+    hit_tp_levels: set[int] = set()
+
+    trades: list[Trade] = []
+
+    for i in range(n - 1):
+        current_signal = signals[i]
+        next_open = open_prices[i + 1]
+
+        equity[i] = cash + abs(position) * close_prices[i]
+
+        in_position = abs(position) > 1e-10
+
+        if in_position:
+            exit_triggered = False
+            exit_reason = "signal"
+
+            if config.max_bars_held is not None:
+                if check_time_based_exit(position_entry_idx, i, config.max_bars_held):
+                    exit_triggered = True
+                    exit_reason = "time"
+
+            if stop_levels is not None and len(stop_levels) > i:
+                if position_direction == 1 and close_prices[i] < stop_levels[i]:
+                    exit_triggered = True
+                    exit_reason = "stop"
+                elif position_direction == -1 and close_prices[i] > stop_levels[i]:
+                    exit_triggered = True
+                    exit_reason = "stop"
+
+            if config.enable_partial_tp and partial_tp_levels:
+                newly_hit = check_partial_tp_hit(
+                    close_prices[i],
+                    high_prices[i],
+                    low_prices[i],
+                    partial_tp_levels,
+                    hit_tp_levels,
+                    position_direction,
+                )
+                for level_idx in newly_hit:
+                    hit_tp_levels.add(level_idx)
+
+            signal_exit = (
+                (position_direction == 1 and current_signal == -1) or
+                (position_direction == -1 and current_signal == -2)
+            )
+
+            if signal_exit or exit_triggered:
+                fill_price = next_open * (1 - config.slippage) if position_direction == 1 else next_open * (1 + config.slippage)
+
+                proceeds = abs(position) * fill_price
+                fees = proceeds * config.fee_rate
+                net_proceeds = proceeds - fees
+
+                if position_direction == 1:
+                    cash += net_proceeds
+                    pnl = net_proceeds - (abs(position) * position_price + abs(position) * position_price * config.fee_rate)
+                else:
+                    entry_cost = abs(position) * position_price
+                    exit_cost = abs(position) * fill_price
+                    pnl = entry_cost - exit_cost - fees - entry_cost * config.fee_rate
+                    cash += entry_cost + pnl
+
+                pnl_pct = pnl / (abs(position) * position_price)
+
+                mae, mfe = compute_mae_mfe(
+                    entry_price=position_price,
+                    prices_high=high_prices,
+                    prices_low=low_prices,
+                    entry_idx=position_entry_idx,
+                    exit_idx=i + 1,
+                    direction=position_direction,
+                )
+
+                mae_pct = mae / position_price if position_price > 0 else 0.0
+                mfe_pct = mfe / position_price if position_price > 0 else 0.0
+
+                bars_held = (i + 1) - position_entry_idx
+
+                trade = Trade(
+                    entry_idx=position_entry_idx,
+                    exit_idx=i + 1,
+                    entry_time=timestamps[position_entry_idx],
+                    exit_time=timestamps[i + 1],
+                    entry_price=position_price,
+                    exit_price=fill_price,
+                    size=abs(position),
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    mae=mae,
+                    mfe=mfe,
+                    mae_pct=mae_pct,
+                    mfe_pct=mfe_pct,
+                    bars_held=bars_held,
+                    fees=fees + abs(position) * position_price * config.fee_rate,
+                    direction=position_direction,
+                    exit_reason=exit_reason,
+                )
+                trades.append(trade)
+
+                position = 0.0
+                position_price = 0.0
+                position_entry_idx = -1
+                position_direction = 0
+                partial_tp_levels = []
+                hit_tp_levels = set()
+
+        if not in_position:
+            is_long_entry = current_signal == 1
+            is_short_entry = config.allow_shorts and current_signal == 2
+
+            if is_long_entry or is_short_entry:
+                direction = 1 if is_long_entry else -1
+                fill_price = next_open * (1 + config.slippage) if direction == 1 else next_open * (1 - config.slippage)
+
+                if config.sizing_mode == "volatility" and atr is not None and stop_levels is not None:
+                    current_atr = atr[i] if i < len(atr) else atr[-1]
+                    stop_price = stop_levels[i] if i < len(stop_levels) else fill_price * 0.95
+
+                    size = compute_volatility_based_size(
+                        capital=cash,
+                        entry_price=fill_price,
+                        stop_price=stop_price,
+                        volatility=current_atr,
+                        risk_target=config.volatility_target,
+                        max_risk_per_trade=config.max_risk_per_trade,
+                    )
+                elif config.sizing_mode == "fixed_risk" and stop_levels is not None:
+                    stop_price = stop_levels[i] if i < len(stop_levels) else fill_price * 0.95
+                    size = compute_fixed_risk_size(
+                        capital=cash,
+                        entry_price=fill_price,
+                        stop_price=stop_price,
+                        risk_fraction=config.max_risk_per_trade,
+                    )
+                else:
+                    if config.position_size_mode == "full":
+                        max_spending = cash * config.position_size_fraction
+                        size = max_spending / (fill_price * (1 + config.fee_rate))
+                    else:
+                        size = config.position_size_fraction
+
+                cost = size * fill_price
+                fees = cost * config.fee_rate
+                total_cost = cost + fees
+
+                if total_cost <= cash + 1e-10 and size > 0:
+                    position = size if direction == 1 else -size
+                    position_price = fill_price
+                    position_entry_idx = i + 1
+                    position_direction = direction
+                    cash -= total_cost
+
+                    if config.enable_partial_tp and config.partial_tp_scales:
+                        from core.analysis.exits import compute_partial_tp_levels as compute_levels
+                        partial_tp_levels = compute_levels(
+                            fill_price,
+                            direction,
+                            config.partial_tp_scales,
+                        )
+                        hit_tp_levels = set()
+
+    equity[n - 1] = cash + abs(position) * close_prices[n - 1]
+
+    metrics = compute_metrics(equity, trades, config.initial_capital)
+
+    return BacktestResult(equity_curve=equity, trades=trades, metrics=metrics)
 
 
 def trades_to_dataframe(trades: list[Trade]) -> pd.DataFrame:
