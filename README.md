@@ -1,18 +1,29 @@
 # Binance Fourier Backtester
 
-A Python 3.11 + Streamlit application for fetching, caching, and visualizing Binance OHLCV data with advanced Fourier analysis and spectral smoothing capabilities.
+A Python 3.11 + Streamlit application for fetching, caching, and visualizing Binance OHLCV data with advanced Fourier analysis, spectral smoothing, and algorithmic trading backtesting capabilities.
 
 ## Features
 
+### Data & Analysis
 - **Data Fetching**: Fetch 30m, 1h, and 4h klines from Binance REST API with automatic retries and rate limiting
 - **Smart Caching**: Parquet-based caching with incremental updates and automatic gap detection/backfill
 - **DCT Smoothing**: Discrete Cosine Transform-based low-pass smoothing with mirrored padding and tapered cutoff
 - **FFT Spectrum Analysis**: Global power spectrum with dominant frequency peaks labeled in bars/hours
 - **Sliding Window PSD**: Welch's method for local dominant period extraction over time
 - **Spectral Heatmaps**: Time-frequency analysis showing how dominant periods evolve
+
+### Backtesting & Trading
+- **Dynamic Stop Bands**: ATR-based and residual-based stops with configurable multipliers
+- **Signal Generation**: Trend-following signals with slope and volatility filters
+- **Vectorized Backtester**: Fast, realistic backtesting with next-bar fills, fees, and slippage
+- **Performance Metrics**: 19 metrics including Sharpe, Sortino, win rate, profit factor, and more
+- **Trade Analysis**: MAE/MFE tracking, equity curve, complete trade logs
+
+### Infrastructure
 - **Interactive UI**: Streamlit-based interface with real-time parameter adjustment
 - **Robust Error Handling**: Exponential backoff retries with configurable limits
 - **Type Safety**: Full type hints with mypy validation
+- **Comprehensive Testing**: 79 tests covering all components
 
 ## Installation
 
@@ -239,6 +250,168 @@ Compute dominant period over time using sliding windows.
 
 **Returns:**
 - `tuple[np.ndarray, np.ndarray]`: Time indices and dominant periods
+
+### Dynamic Stop Bands
+
+#### `compute_atr(high, low, close, period=14)`
+
+Compute Average True Range (ATR).
+
+**Parameters:**
+- `high` (np.ndarray): High prices
+- `low` (np.ndarray): Low prices
+- `close` (np.ndarray): Close prices
+- `period` (int): ATR period
+
+**Returns:**
+- `np.ndarray`: ATR values
+
+#### `compute_atr_stops(close, high, low, atr_period=14, k_stop=2.0, k_profit=3.0)`
+
+Compute ATR-based stop and take-profit bands.
+
+**Parameters:**
+- `close` (np.ndarray): Close prices
+- `high` (np.ndarray): High prices
+- `low` (np.ndarray): Low prices
+- `atr_period` (int): Period for ATR calculation
+- `k_stop` (float): Multiplier for stop loss
+- `k_profit` (float): Multiplier for take profit
+
+**Returns:**
+- `tuple[np.ndarray, ...]`: (long_stop, long_profit, short_stop, short_profit)
+
+#### `compute_residual_stops(close, smoothed, method='sigma', window=20, quantile=0.95, k_stop=2.0, k_profit=3.0)`
+
+Compute residual-based stop and take-profit bands.
+
+**Parameters:**
+- `close` (np.ndarray): Close prices
+- `smoothed` (np.ndarray): Smoothed trend line
+- `method` (str): 'sigma' or 'quantile'
+- `window` (int): Rolling window size
+- `quantile` (float): Quantile level (if method='quantile')
+- `k_stop` (float): Multiplier for stop loss
+- `k_profit` (float): Multiplier for take profit
+
+**Returns:**
+- `tuple[np.ndarray, ...]`: (long_stop, long_profit, short_stop, short_profit)
+
+### Signal Generation
+
+#### `generate_trend_following_signals(close, smoothed, slope_threshold=0.0, slope_lookback=1, min_volatility=0.0, volatility=None)`
+
+Generate trend-following entry and exit signals.
+
+**Parameters:**
+- `close` (np.ndarray): Close prices
+- `smoothed` (np.ndarray): Smoothed trend line
+- `slope_threshold` (float): Minimum slope for entry
+- `slope_lookback` (int): Lookback for slope computation
+- `min_volatility` (float): Minimum volatility filter
+- `volatility` (np.ndarray): Volatility measure (optional)
+
+**Returns:**
+- `tuple[np.ndarray, np.ndarray]`: (entry_signals, exit_signals) as boolean arrays
+
+#### `generate_signals_with_stops(close, smoothed, stop_levels, slope_threshold=0.0, slope_lookback=1, min_volatility=0.0, volatility=None)`
+
+Generate signals with integrated stop loss logic.
+
+**Parameters:**
+- Same as `generate_trend_following_signals` plus:
+- `stop_levels` (np.ndarray): Stop loss levels
+
+**Returns:**
+- `np.ndarray`: Signal array (1=entry, -1=exit, 0=hold)
+
+### Backtesting
+
+#### `run_backtest(signals, open_prices, high_prices, low_prices, close_prices, timestamps, config=None)`
+
+Run vectorized backtest with next-bar open fills.
+
+**Parameters:**
+- `signals` (np.ndarray): Signal array (1=entry, -1=exit, 0=hold)
+- `open_prices` (np.ndarray): Open prices
+- `high_prices` (np.ndarray): High prices
+- `low_prices` (np.ndarray): Low prices
+- `close_prices` (np.ndarray): Close prices
+- `timestamps` (pd.DatetimeIndex): Timestamps
+- `config` (BacktestConfig): Configuration (optional)
+
+**Returns:**
+- `BacktestResult`: Results with equity_curve, trades, and metrics
+
+#### `BacktestConfig` Parameters
+
+- `initial_capital` (float): Starting capital (default 10,000)
+- `fee_rate` (float): Trading fee rate (default 0.001)
+- `slippage` (float): Slippage per trade (default 0.0005)
+- `position_size_mode` (str): 'full' or 'fixed'
+- `position_size_fraction` (float): Fraction of capital (default 1.0)
+
+#### Performance Metrics
+
+The `BacktestResult.metrics` dictionary contains:
+- `total_return`, `cumulative_return`, `annualized_return`
+- `max_drawdown`, `max_drawdown_pct`
+- `sharpe_ratio`, `sortino_ratio`
+- `n_trades`, `n_wins`, `n_losses`, `win_rate`
+- `profit_factor`, `avg_win`, `avg_loss`
+- `avg_bars_held`, `avg_mae`, `avg_mfe`, `avg_mae_pct`, `avg_mfe_pct`
+
+## Example Usage
+
+### Complete Backtest Workflow
+
+```python
+from core.data.loader import load_klines
+from core.analysis.fourier import smooth_price_series
+from core.analysis.stops import compute_atr_stops
+from core.analysis.signals import generate_signals_with_stops
+from core.backtest.engine import BacktestConfig, run_backtest
+
+# Load data
+df = load_klines("BTCUSDT", "1h", start_date, end_date)
+
+# Extract OHLCV
+close = df["close"].values
+high = df["high"].values
+low = df["low"].values
+open_prices = df["open"].values
+timestamps = df["open_time"]
+
+# Smooth prices
+smoothed = smooth_price_series(close, min_period_bars=24, cutoff_scale=1.0)
+
+# Compute stop bands
+long_stop, long_profit, _, _ = compute_atr_stops(
+    close, high, low, atr_period=14, k_stop=2.0, k_profit=3.0
+)
+
+# Generate signals
+signals = generate_signals_with_stops(
+    close=close,
+    smoothed=smoothed,
+    stop_levels=long_stop,
+    slope_threshold=0.0
+)
+
+# Run backtest
+config = BacktestConfig(
+    initial_capital=10000,
+    fee_rate=0.001,
+    slippage=0.0005
+)
+result = run_backtest(signals, open_prices, high, low, close, timestamps, config)
+
+# Print results
+print(f"Total return: {result.metrics['total_return']:.2%}")
+print(f"Sharpe ratio: {result.metrics['sharpe_ratio']:.2f}")
+print(f"Win rate: {result.metrics['win_rate']:.2%}")
+print(f"Number of trades: {result.metrics['n_trades']}")
+```
 
 ## License
 
