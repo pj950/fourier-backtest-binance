@@ -32,12 +32,22 @@ A Python 3.11 + Streamlit application for fetching, caching, and visualizing Bin
 - **Reproducible Seeds**: All methods support seeding for reproducibility
 - **Batch Processing**: Leaderboard-based evaluation of parameter combinations
 
+### Portfolio & Risk Management (M9)
+- **Multi-Symbol Backtesting**: Parallel per-symbol runs with portfolio aggregation
+- **Weighting Schemes**: Equal, volatility-scaled, risk parity, market cap weighted
+- **Dynamic Rebalancing**: Configurable frequency and threshold-based rebalancing
+- **Correlation Analysis**: Static and rolling correlation matrices
+- **Risk Analytics**: Diversification ratio, concentration metrics, risk contributions
+- **Exposure Tracking**: Sector exposure and beta calculations
+- **Portfolio Metrics**: Comprehensive portfolio-level performance and risk metrics
+- **Interactive Portfolio UI**: Symbol basket selection, weight visualization, equity curves
+
 ### Infrastructure
 - **Interactive UI**: Streamlit-based interface with real-time parameter adjustment
-- **Optimization Tab**: Dedicated UI for parameter search and robustness testing
+- **Multiple Modes**: Backtesting, Optimization, and Portfolio tabs
 - **Robust Error Handling**: Exponential backoff retries with configurable limits
 - **Type Safety**: Full type hints with mypy validation
-- **Comprehensive Testing**: 120+ tests covering all components including M7 and M8
+- **Comprehensive Testing**: 150+ tests covering all components including M7, M8, and M9
 
 ## Installation
 
@@ -86,7 +96,9 @@ Key configuration options:
 .
 ├── app/
 │   └── ui/
-│       └── main.py                 # Streamlit UI entry point
+│       ├── main.py                 # Streamlit UI entry point
+│       ├── optimization_tab.py     # Optimization interface (M8)
+│       └── portfolio_tab.py        # Portfolio interface (M9)
 ├── core/
 │   ├── analysis/
 │   │   ├── fourier.py              # DCT-based smoothing functions
@@ -102,12 +114,24 @@ Key configuration options:
 │   │   ├── binance_client.py       # Binance API client
 │   │   ├── cache.py                # Parquet caching with gap detection
 │   │   └── loader.py               # Unified data loading API
+│   ├── optimization/               # M8 optimization framework
+│   │   ├── search.py               # Grid/Random/Bayesian search
+│   │   ├── params.py               # Parameter space definitions
+│   │   ├── walkforward.py          # Walk-forward analysis
+│   │   ├── monte_carlo.py          # Monte Carlo resampling
+│   │   └── visualization.py        # Optimization visualizations
+│   ├── portfolio/                  # M9 portfolio management
+│   │   ├── portfolio.py            # Main portfolio manager
+│   │   ├── weights.py              # Weighting schemes
+│   │   ├── analytics.py            # Risk and correlation analytics
+│   │   └── executor.py             # Parallel backtest execution
 │   └── utils/
 │       └── time.py                 # UTC time utilities
 ├── config/
 │   └── settings.py                 # Configuration management
 ├── examples/
-│   └── mtf_strategy_example.py    # Complete MTF strategy example (M7)
+│   ├── mtf_strategy_example.py    # Complete MTF strategy example (M7)
+│   └── portfolio_example.py        # Portfolio management example (M9)
 ├── tests/
 │   ├── test_backtest.py            # Backtest engine tests
 │   ├── test_backtest_enhanced.py   # Enhanced backtest tests (M7)
@@ -117,8 +141,14 @@ Key configuration options:
 │   ├── test_mtf.py                 # Multi-timeframe tests (M7)
 │   ├── test_exits.py               # Exit strategies tests (M7)
 │   ├── test_sizing.py              # Position sizing tests (M7)
+│   ├── test_optimization.py        # Optimization tests (M8)
+│   ├── test_portfolio.py           # Portfolio tests (M9)
+│   ├── test_portfolio_weights.py   # Weighting scheme tests (M9)
+│   ├── test_portfolio_analytics.py # Analytics tests (M9)
 │   └── test_strategy_integration.py # Integration tests (M7)
 ├── IMPLEMENTATION_M7.md            # M7 features documentation
+├── IMPLEMENTATION_M8.md            # M8 features documentation
+├── IMPLEMENTATION_M9.md            # M9 features documentation
 ├── Dockerfile                      # Docker configuration
 ├── pyproject.toml                  # Poetry dependencies
 └── README.md                       # This file
@@ -545,6 +575,62 @@ export_full_optimization_results(opt_run, "results/", include_visualizations=Tru
 ```
 
 For a complete working example with walk-forward and Monte Carlo, see `examples/optimization_example.py`.
+
+## M9 Portfolio & Risk Management
+
+The M9 milestone adds multi-symbol portfolio management and risk controls. See [IMPLEMENTATION_M9.md](IMPLEMENTATION_M9.md) for detailed documentation.
+
+### Portfolio Example
+
+```python
+from datetime import UTC, datetime
+from core.data.loader import load_klines
+from core.portfolio.portfolio import create_portfolio
+
+# Load data for multiple symbols
+symbols = ["BTCUSDT", "ETHUSDT"]
+data_dict = {}
+for symbol in symbols:
+    df = load_klines(
+        symbol=symbol,
+        interval="1h",
+        start=datetime(2024, 1, 1, tzinfo=UTC),
+        end=datetime(2024, 6, 1, tzinfo=UTC),
+    )
+    data_dict[symbol] = df
+
+# Create portfolio with risk parity weights
+portfolio = create_portfolio(
+    symbols=symbols,
+    weighting_method="risk_parity",
+    initial_capital=10000.0,
+)
+
+# Run portfolio backtest
+result = portfolio.run_backtest(
+    data_dict=data_dict,
+    strategy_func=my_strategy,
+    strategy_params={},
+)
+
+# Analyze results
+print(f"Total Return: {result.metrics['total_return']:.2%}")
+print(f"Sharpe Ratio: {result.metrics['sharpe_ratio']:.2f}")
+print(f"Diversification: {result.metrics['diversification_ratio']:.2f}")
+print(f"Correlation Matrix:\n{result.correlation_matrix}")
+
+# Compare weights
+for symbol, weight in zip(symbols, result.weights):
+    print(f"{symbol}: {weight:.2%}")
+```
+
+Available weighting methods:
+- **Equal**: Simple equal weighting
+- **Volatility**: Inverse volatility weighting
+- **Risk Parity**: Equal risk contribution
+- **Market Cap**: Market capitalization weighted
+
+For a complete working example comparing different weighting schemes, see `examples/portfolio_example.py`.
 
 ## License
 
