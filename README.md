@@ -1,5 +1,7 @@
 # Binance Fourier Backtester
 
+[English](README.md) | [中文](README.zh-CN.md)
+
 A comprehensive Python 3.11+ trading strategy platform combining advanced Fourier analysis, spectral smoothing, and algorithmic backtesting with an interactive Streamlit UI. Designed for systematic trading research, parameter optimization, and portfolio risk management.
 
 ## 🎯 Project Overview

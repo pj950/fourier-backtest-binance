@@ -1,5 +1,7 @@
 # Configuration Reference
 
+[English](CONFIGURATION.md) | [中文](CONFIGURATION.zh-CN.md)
+
 Complete reference for all configurable parameters in the Binance Fourier Backtester.
 
 ## Table of Contents

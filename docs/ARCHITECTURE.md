@@ -1,5 +1,7 @@
 # Architecture Deep Dive
 
+[English](ARCHITECTURE.md) | [中文](ARCHITECTURE.zh-CN.md)
+
 This document provides an in-depth technical explanation of the Binance Fourier Backtester's architecture, algorithms, and design decisions.
 
 ## Table of Contents

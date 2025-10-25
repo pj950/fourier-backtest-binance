@@ -1,5 +1,7 @@
 # Frequently Asked Questions (FAQ)
 
+[English](FAQ.md) | [中文](FAQ.zh-CN.md)
+
 Common questions and answers about the Binance Fourier Backtester.
 
 ## Table of Contents
