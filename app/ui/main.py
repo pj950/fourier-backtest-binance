@@ -221,13 +221,18 @@ st.title("Binance Fourier Backtester")
 with st.sidebar:
     app_mode = st.radio(
         "Select Mode",
-        ["📈 Backtesting", "🔍 Optimization"],
+        ["📈 Backtesting", "🔍 Optimization", "📊 Portfolio"],
         index=0,
     )
 
 if app_mode == "🔍 Optimization":
     from app.ui.optimization_tab import render_optimization_tab
     render_optimization_tab()
+    st.stop()
+
+if app_mode == "📊 Portfolio":
+    from app.ui.portfolio_tab import render_portfolio_tab
+    render_portfolio_tab()
     st.stop()
 
 st.markdown("---")
