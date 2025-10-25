@@ -217,6 +217,19 @@ _initialize_session_state()
 
 st.title("Binance Fourier Backtester")
 
+# Sidebar mode selection
+with st.sidebar:
+    app_mode = st.radio(
+        "Select Mode",
+        ["📈 Backtesting", "🔍 Optimization"],
+        index=0,
+    )
+
+if app_mode == "🔍 Optimization":
+    from app.ui.optimization_tab import render_optimization_tab
+    render_optimization_tab()
+    st.stop()
+
 st.markdown("---")
 
 with st.expander("💾 Presets & Persistence", expanded=False):

@@ -23,11 +23,21 @@ A Python 3.11 + Streamlit application for fetching, caching, and visualizing Bin
 - **Performance Metrics**: 19 metrics including Sharpe, Sortino, win rate, profit factor, and more
 - **Trade Analysis**: MAE/MFE tracking, equity curve, complete trade logs with exit reasons
 
+### Parameter Optimization & Robustness (M8)
+- **Grid/Random/Bayesian Search**: Multiple optimization algorithms for parameter tuning
+- **Walk-Forward Analysis**: Rolling or anchored validation with train/test splits
+- **Monte Carlo Resampling**: Block bootstrap for robustness evaluation
+- **Rich Visualizations**: Heatmaps, frontier plots, parameter importance, progress tracking
+- **Export Capabilities**: CSV/Parquet export with best configurations
+- **Reproducible Seeds**: All methods support seeding for reproducibility
+- **Batch Processing**: Leaderboard-based evaluation of parameter combinations
+
 ### Infrastructure
 - **Interactive UI**: Streamlit-based interface with real-time parameter adjustment
+- **Optimization Tab**: Dedicated UI for parameter search and robustness testing
 - **Robust Error Handling**: Exponential backoff retries with configurable limits
 - **Type Safety**: Full type hints with mypy validation
-- **Comprehensive Testing**: 100+ tests covering all components including M7 enhancements
+- **Comprehensive Testing**: 120+ tests covering all components including M7 and M8
 
 ## Installation
 
@@ -495,6 +505,46 @@ result = run_backtest_enhanced(signals, open_prices, high, low, close, timestamp
 ```
 
 For a complete working example, see `examples/mtf_strategy_example.py`.
+
+## M8 Parameter Optimization
+
+The M8 milestone adds parameter optimization and robustness evaluation. See [IMPLEMENTATION_M8.md](IMPLEMENTATION_M8.md) for detailed documentation.
+
+### Optimization Example
+
+```python
+from core.optimization.params import create_default_param_space
+from core.optimization.runner import OptimizationRunner
+
+# Define objective function
+def objective_function(params, df):
+    result = run_strategy_with_params(params, df)
+    return result.metrics
+
+# Create runner
+runner = OptimizationRunner(
+    objective_function=objective_function,
+    objective_metric="sharpe_ratio",
+    maximize=True,
+    seed=42,
+)
+
+# Run Bayesian optimization
+opt_run = runner.run_bayesian_search(
+    param_spaces=create_default_param_space(),
+    data=df,
+    n_initial=10,
+    n_iter=40,
+)
+
+print(f"Best Sharpe: {opt_run.best_score:.4f}")
+print(f"Best params: {opt_run.best_params}")
+
+# Export results
+export_full_optimization_results(opt_run, "results/", include_visualizations=True)
+```
+
+For a complete working example with walk-forward and Monte Carlo, see `examples/optimization_example.py`.
 
 ## License
 
